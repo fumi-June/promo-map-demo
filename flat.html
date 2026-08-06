@@ -96,6 +96,7 @@
         円の中の数字がその施設の無料イベント件数です。
         イベント名・日付・会場と公式ページへのリンクのみを掲載しています。
       </div>
+      <div class="note">ビルド: 2026-08-06 geo-2</div>
     </details>
   </div>
   <div id="map"></div>
@@ -359,20 +360,45 @@
     }
 
     // 現在地は「経路案内」を押した時点で聞く。開いた瞬間に許可を求めない
-    let here = null, geoDenied = false;
+    let here = null, geoDenied = false, geoReason = '';
     // 現在地のマーカー。経路が引けた時だけ地図に出す
     const userMarker = new maplibregl.Marker({ color: '#2ecc71' });
     // Googleマップへ渡す起点。現在地が取れたら差し替える
     let gmapsOrigin = [DATA.origin.lat, DATA.origin.lng];
-    function getHere() {
-      if (here || geoDenied || !navigator.geolocation) return Promise.resolve(here);
+    let hereAccuracy = null;
+    // 失敗理由で挙動が変わる。拒否は諦める、タイムアウトは精度を落として一度だけ再試行。
+    // 屋内や地下だと高精度測位が返らないことがあり、梅田は地下街が多い。
+    const GEO_REASON = {
+      1: '位置情報が許可されていません',
+      2: '位置情報を取得できませんでした（屋内・地下では失敗することがあります）',
+      3: '位置情報の取得がタイムアウトしました'
+    };
+
+    function askPosition(opts) {
       return new Promise((resolve) => {
         navigator.geolocation.getCurrentPosition(
-          (pos) => { here = [pos.coords.latitude, pos.coords.longitude]; resolve(here); },
-          () => { geoDenied = true; resolve(null); },
-          { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+          (pos) => resolve({ ok: [pos.coords.latitude, pos.coords.longitude], accuracy: pos.coords.accuracy }),
+          (err) => resolve({ err: err.code }),
+          opts
         );
       });
+    }
+
+    async function getHere() {
+      if (here) return here;
+      if (geoDenied) return null;
+      if (!window.isSecureContext) { geoReason = 'HTTPSでないため位置情報を使えません'; return null; }
+      if (!navigator.geolocation) { geoReason = 'この端末では位置情報を使えません'; return null; }
+
+      let r = await askPosition({ enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+      if (r.err === 3 || r.err === 2) {
+        // 高精度が返らないときは基地局・Wi-Fi 測位で取り直す
+        r = await askPosition({ enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
+      }
+      if (r.ok) { here = r.ok; hereAccuracy = r.accuracy; return here; }
+      geoReason = GEO_REASON[r.err] || '位置情報を取得できませんでした';
+      if (r.err === 1) geoDenied = true;
+      return null;
     }
 
     // --- カード（ピン → カード → 経路案内） ---
@@ -498,7 +524,7 @@
         const r = routeBetween(pos, [dest.lat, dest.lng]);
         if (r && !r.outside) {
           userMarker.setLngLat([pos[1], pos[0]]).addTo(map);
-          drawRoute(r, '現在地から');
+          drawRoute(r, hereAccuracy ? `現在地から（誤差±${Math.round(hereAccuracy)}m）` : '現在地から');
           gmapsOrigin = pos;
           updateGmapsLink();
           return;
@@ -511,7 +537,8 @@
       window.showRoute(currentFacility);
       // なぜ大阪駅起点になったのかを残す。黙って別の起点に落ちると誤解を生む
       const label = outside ? '大阪駅から（現在地は梅田の範囲外）'
-        : pos ? '大阪駅から' : '大阪駅から（現在地を取得できませんでした）';
+        : pos ? '大阪駅から'
+        : `大阪駅から（${geoReason || '現在地を取得できませんでした'}）`;
       document.getElementById('route-info').textContent =
         `${label}　徒歩 ${route.distance_m}m・約${route.duration_min}分` +
         (MODE_LABEL[route.mode] || '');
