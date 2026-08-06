@@ -69,6 +69,13 @@
     }
     #route-btn:disabled { background:#ccc; cursor:default; }
     #route-info { margin-top:8px; color:#333; font-size:12px; }
+    /* デモ限定の外部遷移。将来アプリ内で完結させる際は外す */
+    #gmaps-btn {
+      display:block; margin-top:8px; padding:9px; border-radius:10px; text-align:center;
+      background:#fff; border:1px solid #4da3ff; color:#0b57d0; font-size:13px;
+      font-weight:600; text-decoration:none;
+    }
+    .gmaps-note { color:#888; font-size:11px; margin-top:4px; line-height:1.4; }
   </style>
 </head>
 <body>
@@ -100,6 +107,8 @@
     <ul id="card-list"></ul>
     <button id="route-btn" type="button">経路案内</button>
     <div id="route-info"></div>
+    <a id="gmaps-btn" href="#" target="_blank" rel="noopener">Googleマップで開く</a>
+    <div class="gmaps-note">経路はGoogleが計算します（地下街を通らない経路になることがあります）</div>
   </div>
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script>
@@ -290,6 +299,19 @@
                (ev.detail ? `<div class="d">${esc(ev.detail)}</div>` : '') + evid + `</li>`;
         // 公開ページでは detail / evidence が空になる（本文は転載しない）
       }).join('');
+
+      // Googleマップへの遷移はデモ限定。経路そのものは渡せない（起点・終点だけ）ので、
+      // Google 側が自前グラフとは違う経路を出しうる。ボタン下に明記している。
+      //
+      // 行き先は**施設名**を渡す。住所を連結した文字列はジオコーダが解決できないことが
+      // あり（Nominatim で6施設中0件）、名称単体なら5/6が10〜310m以内で解決した。
+      // 座標を渡すと確実だが、行き先が「34.7039,135.4985」と表示されて分かりにくい。
+      const dest = p.store || `${p.lat},${p.lng}`;
+      document.getElementById('gmaps-btn').href =
+        'https://www.google.com/maps/dir/?api=1' +
+        `&origin=${encodeURIComponent(DATA.origin.lat + ',' + DATA.origin.lng)}` +
+        `&destination=${encodeURIComponent(dest)}` +
+        '&travelmode=walking';
 
       const route = DATA.routeByFacility[facilityId];
       routeBtn.disabled = !route;
