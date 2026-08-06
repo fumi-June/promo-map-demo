@@ -96,7 +96,7 @@
         円の中の数字がその施設の無料イベント件数です。
         イベント名・日付・会場と公式ページへのリンクのみを掲載しています。
       </div>
-      <div class="note">ビルド: 2026-08-06 geo-2</div>
+      <div class="note">ビルド: 2026-08-06 geo-3</div>
     </details>
   </div>
   <div id="map"></div>
@@ -150,7 +150,7 @@
       addBuildings();
       addRoutes();
       addPillars();
-      if (!originAdded) { addOrigin(); originAdded = true; }
+      if (!originAdded) { addOrigin(); originAdded = true; locateOnLoad(); }
     }
     // styledata の時点では isStyleLoaded() がまだ false のことがあるので idle でも試す
     map.on('load', installLayers);
@@ -361,8 +361,8 @@
 
     // 現在地は「経路案内」を押した時点で聞く。開いた瞬間に許可を求めない
     let here = null, geoDenied = false, geoReason = '';
-    // 現在地のマーカー。経路が引けた時だけ地図に出す
-    const userMarker = new maplibregl.Marker({ color: '#2ecc71' });
+    // 現在地のマーカー。測位できるまでは起点（大阪駅）に置いておき、取れたら移動する
+    const hereMarker = new maplibregl.Marker({ color: '#ff8c42' });
     // Googleマップへ渡す起点。現在地が取れたら差し替える
     let gmapsOrigin = [DATA.origin.lat, DATA.origin.lng];
     let hereAccuracy = null;
@@ -523,7 +523,6 @@
       if (pos && G && dest) {
         const r = routeBetween(pos, [dest.lat, dest.lng]);
         if (r && !r.outside) {
-          userMarker.setLngLat([pos[1], pos[0]]).addTo(map);
           drawRoute(r, hereAccuracy ? `現在地から（誤差±${Math.round(hereAccuracy)}m）` : '現在地から');
           gmapsOrigin = pos;
           updateGmapsLink();
@@ -553,10 +552,43 @@
     });
 
     function addOrigin() {
-      new maplibregl.Marker({ color: '#ff8c42' })
-        .setLngLat([DATA.origin.lng, DATA.origin.lat])
-        .setPopup(new maplibregl.Popup().setText('現在地: ' + (DATA.origin.id || '')))
+      hereMarker
+        .setLngLat(here ? [here[1], here[0]] : [DATA.origin.lng, DATA.origin.lat])
+        .setPopup(new maplibregl.Popup().setText(
+          here ? '現在地' : '大阪駅（現在地を取得中）'))
         .addTo(map);
+    }
+
+    // 現在地が取れたらピンをそこへ動かす。歩いても追従させる（デモで歩き回るため）
+    function placeHere(pos, accuracy) {
+      here = pos;
+      hereAccuracy = accuracy;
+      gmapsOrigin = pos;
+      hereMarker.setLngLat([pos[1], pos[0]]);
+      const label = accuracy ? `現在地（誤差±${Math.round(accuracy)}m）` : '現在地';
+      hereMarker.setPopup(new maplibregl.Popup().setText(label));
+      if (typeof window.updateGmapsLink === 'function') window.updateGmapsLink();
+    }
+
+    async function locateOnLoad() {
+      const pos = await getHere();
+      if (!pos) {
+        hereMarker.setPopup(new maplibregl.Popup().setText(
+          `大阪駅（${geoReason || '現在地を取得できませんでした'}）`));
+        return;
+      }
+      placeHere(pos, hereAccuracy);
+      // 梅田の中にいるならそこを見せる。外なら地図は梅田のままにする
+      if (G && nearestNode(pos).distance <= OUTSIDE_M) {
+        map.easeTo({ center: [pos[1], pos[0]], duration: 800 });
+      }
+      if (navigator.geolocation.watchPosition) {
+        navigator.geolocation.watchPosition(
+          (p) => placeHere([p.coords.latitude, p.coords.longitude], p.coords.accuracy),
+          () => {},
+          { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+        );
+      }
     }
 
     // 経路の表示切り替え。#5 のカードUIから呼ぶ入口をここで用意しておく
