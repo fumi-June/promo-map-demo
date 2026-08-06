@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>梅田・無料イベント地図</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
+  <style>
+    /* padding を幅に含める。含めないとスマホ幅でカードが画面からはみ出す（実測） */
+    *, *::before, *::after { box-sizing:border-box; }
+    body { margin:0; font-family:"Hiragino Sans","Noto Sans JP",system-ui,sans-serif; }
+    #map { position:absolute; inset:0; background:#0d1b2a; }
+    .bar {
+      position:absolute; z-index:10; top:10px; left:10px; right:10px; max-width:720px;
+      background:rgba(255,255,255,.95); padding:10px 14px; border-radius:10px;
+      box-shadow:0 2px 10px rgba(0,0,0,.25); font-size:13px;
+    }
+    .legend span { display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 4px 0 12px; }
+    .note { color:#666; font-size:11px; margin-top:6px; }
+    .intro { margin-top:6px; color:#333; }
+    .alt {
+      float:right; font-size:12px; color:#0b57d0; text-decoration:none;
+      border:1px solid #cbd5e1; border-radius:14px; padding:2px 10px;
+    }
+    #hint {
+      position:absolute; z-index:15; left:50%; transform:translateX(-50%); bottom:18px;
+      background:rgba(20,24,31,.92); color:#fff; padding:9px 16px; border-radius:22px;
+      font-size:13px; box-shadow:0 3px 14px rgba(0,0,0,.35); cursor:pointer;
+    }
+    #hint.hidden { display:none; }
+    .maplibregl-popup-content { font-size:13px; max-width:280px; }
+
+    /* ピンをタップ → カード → 「経路案内」ボタン、が確定したUIフロー。
+       経路は押すまで描かない（情報密度を上げるため既定では線を出さない）。 */
+    #card {
+      position:absolute; z-index:20; left:10px; bottom:10px; width:min(380px, calc(100% - 20px));
+      max-height:60vh; overflow-y:auto; display:none;
+      background:#fff; border-radius:14px; box-shadow:0 6px 24px rgba(0,0,0,.3);
+      padding:14px 16px; font-size:13px; line-height:1.6;
+    }
+    #card.open { display:block; }
+    details summary { cursor:pointer; color:#0b57d0; font-size:12px; margin-top:6px; }
+    /* スマホでは説明もカードも小さくしないと地図が見えない */
+    @media (max-width: 480px) {
+      #card { max-height:46vh; padding:12px 14px; }
+      .bar { font-size:12px; padding:8px 12px; }
+    }
+    #card h2 { margin:0 0 2px; font-size:16px; }
+    #card .place { color:#666; font-size:12px; }
+    #card .close { position:absolute; top:10px; right:12px; cursor:pointer; color:#888; font-size:18px; }
+    #card ul { list-style:none; margin:10px 0 0; padding:0; }
+    #card li { padding:8px 0; border-top:1px solid #eee; }
+    /* タイトルは本文の先頭がそのまま入ることがあるので3行で打ち切る */
+    #card .t {
+      font-weight:600; display:-webkit-box; -webkit-line-clamp:3;
+      -webkit-box-orient:vertical; overflow:hidden;
+    }
+    #card .d { color:#555; font-size:12px; }
+    .badge {
+      display:inline-block; font-size:11px; padding:1px 6px; border-radius:9px;
+      margin-right:4px; vertical-align:1px;
+    }
+    .b-confirmed { background:#2ecc71; color:#04361c; }
+    .b-inferred  { background:#a8e6c1; color:#12503a; }
+    .b-popup     { background:#ffd6a5; color:#6b3b00; }
+    #route-btn {
+      width:100%; margin-top:12px; padding:10px; border:0; border-radius:10px;
+      background:#4da3ff; color:#fff; font-size:14px; font-weight:600; cursor:pointer;
+    }
+    #route-btn:disabled { background:#ccc; cursor:default; }
+    #route-info { margin-top:8px; color:#333; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <strong>梅田・無料イベント地図</strong> <a class="alt" href="./">3D表示へ</a><br/>as_of=2026-08-01　無料イベント 58 件（確定 6 / 推定 52）　施設 6
+    <div class="legend">
+      <span style="background:#2ecc71"></span>無料（確定）
+      <span style="background:#a8e6c1"></span>無料（推定）
+      <span style="background:#4da3ff"></span>地上経路
+      <span style="background:#c792ea"></span>地下経路
+    </div>
+    <!-- 説明は畳んでおく。スマホでは開いたままだと地図がほとんど見えなくなる（実測） -->
+    <details>
+      <summary>このデモについて</summary>
+      <div class="intro">大阪駅から歩いて行ける無料イベントを地図に表示します。円の中の数字が件数です。円をタップ → カード → 「経路案内」で、地下街を含む実際の歩行経路が出ます。データは2026-08-01時点の固定スナップショットです。</div>
+      <div class="note">
+        地図データ © OpenStreetMap contributors ／ タイル OpenFreeMap Liberty。
+        円の中の数字がその施設の無料イベント件数です。
+        イベント名・日付・会場と公式ページへのリンクのみを掲載しています。
+      </div>
+    </details>
+  </div>
+  <div id="map"></div>
+  <div id="hint" class="hidden" role="button"></div>
+  <div id="card" role="dialog" aria-label="施設のイベント">
+    <span class="close" id="card-close" role="button" aria-label="閉じる">×</span>
+    <h2 id="card-title"></h2>
+    <div class="place" id="card-place"></div>
+    <ul id="card-list"></ul>
+    <button id="route-btn" type="button">経路案内</button>
+    <div id="route-info"></div>
+  </div>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script>
+    const DATA = {"pillars": [{"facility_id": "hanshin-umeda", "store": "阪神梅田本店", "place": "梅田", "lat": 34.7039, "lng": 135.4985, "events": [{"title": "「質流れ品大バザール」で実績のある質店が集結！ダイヤモンドや時計、ブランドバッグなど、複数のお見積りの中から、最も高い価…", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12704252_3429.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "「9286 Fashion Lab」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705035_3429.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "兵庫県「ＶＩＦＪ（ヴィフジェイ）」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12706369_3429.html", "date": "2026-08-12", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "阪神タイガースブラックダイナマイト POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705680_3429.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "「ラルーナ」＆「フーカ」POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705856_3429.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "「カズミジュエリー」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705366_3429.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "「エマズ・ルーム」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12704614_3429.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "「カブクアジト」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705571_3429.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "大阪府「象嵌きた」POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705857_3429.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "「トライオン」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12706278_3429.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "「ヤスプラス」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12706345_3429.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "東京都「沙羅」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12706357_3429.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "「イート」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705337_3429.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "「カモク」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12706301_3429.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "「ヒュー」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705367_3429.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "「ミコ」 POP-UP SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705685_3429.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "イベント限定商品などウルトラヒーローのグッズが梅田に大集合！ウルトラヒーローの世界に浸れる展示コーナーも。 ※8階 催場…", "detail": "", "url": "https://ultra-expo.com/osaka2026/", "date": "2026-08-05", "confidence": "confirmed", "evidence": "", "popup_shop": false, "category": ""}, {"title": "日本各地から人気・話題のかき氷店17店舗が集結！旬のフルーツやスイーツなどを「まるごと」使った、この時だけの進化系かき氷…", "detail": "", "url": "https://website.hanshin-dept.jp/hshonten/digi_p/2606/kakigori/", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "giveaway"}, {"title": "Colorful Trip Market ー自分らしさに出会う、大人のマルシェー", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705078_3429.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "かごバトン2026 ～手作りかごが彩る心地よい暮らし～ vol.2", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705756_3429.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "hands_on"}, {"title": "Blooming Days －今日の私が、もっと好きになる－", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705077_3429.html", "date": "本日", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "「エトヴォス」 LIMITED SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705914_3429.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "「オルビス」 LIMITED SHOP", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12705055_3429.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "・「楽装くぼ田 山葡萄のある暮らし 」", "detail": "", "url": "https://www.hanshin-dept.jp/hshonten/shopnews/detail/12704331_3429.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "ドーナツ探求家・溝呂木一美さんが選んだ話題のドーナツをはじめ、今注目のフレンチクルーラーや限定コラボドーナツも！ DON…", "detail": "", "url": "https://web.hh-online.jp/hanshin/contents/str/index.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "関西にも多くの専門店があるタイ料理。本場のタイ料理と認定する『タイ・セレクト』とタッグを組んだ初のイベントが開幕。 本場…", "detail": "", "url": "https://web.hh-online.jp/hanshin/contents/str/index.html", "date": "2026-08-11", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "大阪「みどり製菓」 こはく糖 星のたより", "detail": "", "url": "https://www.instagram.com/p/DbZ-KEjmu6W/", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}], "confirmed": 1, "count": 27, "height": 112.1, "color": "#2ecc71"}, {"facility_id": "grandfront-osaka", "store": "グランフロント大阪", "place": "梅田", "lat": 34.7058, "lng": 135.4945, "events": [{"title": "BEST VINTAGE 🪭~BEST VINTAGE Stay Cool Summer Fair~🪭 2026.08.…", "detail": "", "url": "https://www.grandfront-osaka.jp/campaign/5661/", "date": "2026-08-01~2026-08-31", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "hands_on"}, {"title": "5階HDC大阪C terrace 【HDC大阪】 この夏、家がもっと好きになる！～心地よいインテ… 2026.08.01…", "detail": "", "url": "https://www.grandfront-osaka.jp/event/5582/", "date": "2026-08-01~2026-08-02", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "DRAWER 【DRAWER】2026 Pre Autumn Collection入荷のご案内 2026.07.14 2…", "detail": "", "url": "https://www.grandfront-osaka.jp/event/5608/", "date": "2026-08-01~2026-08-02", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "VICTORINOX マルチツール ワークショップ【ペットボトル コマ作り体験】開… 2026.08.08 2026.0…", "detail": "", "url": "https://www.grandfront-osaka.jp/event/5632/", "date": "2026-08-01~2026-08-02", "confidence": "confirmed", "evidence": "", "popup_shop": false, "category": ""}, {"title": "arena arenaゴーグルカスタムイベント開催！ 2026.07.31 2026.08.02", "detail": "", "url": "https://www.grandfront-osaka.jp/event/5635/", "date": "2026-08-01~2026-08-02", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "うめきたSHIPホール グランフロント大阪＆グラングリーン大阪＆FM802 present MUSIC… 2026.08…", "detail": "", "url": "https://www.grandfront-osaka.jp/event/5596/", "date": "2026-08-01~2026-08-02", "confidence": "confirmed", "evidence": "", "popup_shop": false, "category": ""}, {"title": "うめきた広場メインスペース 梅干しの、その先へ。「男梅 全国布教行脚2026」 2026.08.01 2026.08.0…", "detail": "", "url": "https://www.grandfront-osaka.jp/event/5656/", "date": "2026-08-01~2026-08-02", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "グランフロント大阪北館3階 エナレッジ・mineo大阪 【エナレッジ・mineo大阪】イベント開催のお知らせ 2026.…", "detail": "", "url": "https://www.grandfront-osaka.jp/event/5610/", "date": "2026-08-08~2026-08-09", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "北館3Fアクティブラボ内 センタースペース えらんで、つくって、もってかえろう！いろいろキーホルダーづ… 2026.08…", "detail": "", "url": "https://www.grandfront-osaka.jp/event/5642/", "date": "2026-08-01~2026-08-02", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "北館3Fアクティブラボ内 ディスカッションエリア パッといろは#57 夏休み×自由研究 スーパーボールを作ってみよ… 2…", "detail": "", "url": "https://www.grandfront-osaka.jp/event/5597/", "date": "2026-08-01~2026-08-02", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "北館１F ナレッジプラザ SHO-ism Seiko | Shohei Ohtani -10Years Journey…", "detail": "", "url": "https://www.grandfront-osaka.jp/event/5640/", "date": "2026-08-01~2026-08-02", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "無印良品 『インテリア個別相談会』開催します 2026.07.17 2026.08.04", "detail": "", "url": "https://www.grandfront-osaka.jp/event/5636/", "date": "2026-08-01~2026-08-02", "confidence": "confirmed", "evidence": "", "popup_shop": false, "category": ""}], "confirmed": 3, "count": 12, "height": 95.5, "color": "#2ecc71"}, {"facility_id": "hankyu-umeda", "store": "阪急うめだ本店", "place": "梅田", "lat": 34.7055, "lng": 135.4983, "events": [{"title": "【予告】 ETRO per Kaito Takahashi POP UP STORE", "detail": "", "url": "https://www.hankyu-dept.co.jp/honten/shopnews/detail/12705033_2067.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "現代を代表するアーティストのロメロ ブリット。今回も、家族をテーマにした新作や、ポップなグッズ、ロメロと一緒に楽しむスペ…", "detail": "", "url": "https://website.hankyu-dept.co.jp/honten/h/gallery_romerobritto/", "date": "2026-07-29", "confidence": "confirmed", "evidence": "", "popup_shop": false, "category": ""}, {"title": "【予告】 井上勝彦 油彩画展 ー存在、その美のもとへー", "detail": "", "url": "https://www.hankyu-dept.co.jp/honten/shopnews/detail/12706227_2067.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "門田光雄 個展 『Summer Frames』", "detail": "", "url": "https://www.hankyu-dept.co.jp/honten/shopnews/detail/12704782_2067.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "【予告】 小西潮 谷永太郎 山田純平 3人展", "detail": "", "url": "https://www.hankyu-dept.co.jp/honten/shopnews/detail/12706252_2067.html", "date": "2026-08-05", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "小林大輔ガラス展 ～光を纏う生命の模様～", "detail": "", "url": "https://www.hankyu-dept.co.jp/honten/shopnews/detail/12704532_2067.html", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "NPOフェスティバルとは、地域の方々とこども支援に取り組むNPO（社会貢献団体）をつなぎ、チャリティーの輪を広げるイベン…", "detail": "", "url": "https://santa.h2o-retailing.co.jp/h2o-santa/topics/12701337_2237.html", "date": "2026-08-05", "confidence": "confirmed", "evidence": "", "popup_shop": false, "category": ""}, {"title": "“旅する仕掛け絵本”に見立てた体験型アートイベント。不思議な絵本の世界を巡り、こどもたちの感性を育てていく旅へ。旅のシン…", "detail": "", "url": "https://website.hankyu-dept.co.jp/honten/h/hug_familyfes/", "date": "2026-07-29", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "hands_on"}, {"title": "正午ちょうどにみんなで赤い鼻をつけて、クリニクラウン（臨床道化師）と一緒に入院中のこどもたちに笑顔を届けるチャリティーイ…", "detail": "", "url": "https://santa.h2o-retailing.co.jp/h2o-santa/topics/12706398_2237.html", "date": "2026-08-07", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "社会貢献団体のスタッフをお招きして、インタビュー形式で活動現場の生の声をお届けします。 土曜日の午後は H2Oサンタ チ…", "detail": "", "url": "https://santa.h2o-retailing.co.jp/h2o-santa/topics/12702712_2237.html", "date": "2026-08-01", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}], "confirmed": 2, "count": 10, "height": 91.9, "color": "#2ecc71"}, {"facility_id": "diamor-osaka", "store": "ディアモール大阪", "place": "梅田", "lat": 34.7012, "lng": 135.4965, "events": [{"title": "DIAMOR and. 「丸八蒲鉾」が7月30日(木)〜8月5日(水)の期間限定でOPEN!! DIAMOR and.", "detail": "", "url": "https://www.diamor.jp/information/2026/07/maruhachikamaboko-202607/", "date": "2026-07-30", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "DIAMOR and. 「肝油ドロップ ポップアップストア」が8月6日(木)〜8月18日(火)の期間限定でOPEN!!…", "detail": "", "url": "https://www.diamor.jp/information/2026/07/kanyu-202608/", "date": "2026-08-06", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "POP UP / EVENT 期間限定・イベント", "detail": "", "url": "https://www.diamor.jp/event/", "date": "", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "POP UP SHOP・EVENT", "detail": "", "url": "https://www.diamor.jp/event/", "date": "", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "「丸八蒲鉾」が7月30日(木)〜8月5日(水)の期間限定でOPEN!! 期間 7月30日(木)〜8月5日(水)", "detail": "", "url": "https://www.diamor.jp/diamor-and-howto/", "date": "2026-07-30", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "browse"}, {"title": "ディアモール大阪×T・ジョイ梅田 お買物券＆映画ペアチケット プレゼントキャンペーン", "detail": "", "url": "https://www.diamor.jp/event/2026/07/202707-tjoy/", "date": "", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "giveaway"}], "confirmed": 0, "count": 6, "height": 82.1, "color": "#a8e6c1"}, {"facility_id": "hepfive", "store": "HEP FIVE", "place": "梅田", "lat": 34.704, "lng": 135.5003, "events": [{"title": "POP UP ポップアップショップのお知らせ ... 続きを読む", "detail": "", "url": "https://www.hepfive.jp/popup", "date": "", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}, {"title": "POP UP 開催中", "detail": "", "url": "https://www.hepfive.jp/popup", "date": "", "confidence": "inferred", "evidence": "", "popup_shop": true, "category": "browse"}], "confirmed": 0, "count": 2, "height": 63.8, "color": "#a8e6c1"}, {"facility_id": "yodobashi-umeda-via-samsung", "store": "ヨドバシカメラ マルチメディア梅田", "place": "梅田", "lat": 34.7046, "lng": 135.4951, "events": [{"title": "Samsung Galaxy 展示・体験 @ ヨドバシ梅田（リンクスプラザ）", "detail": "", "url": "https://www.samsung.com/jp/explore/foldable-experience/", "date": "", "confidence": "inferred", "evidence": "", "popup_shop": false, "category": "hands_on"}], "confirmed": 0, "count": 1, "height": 55.0, "color": "#a8e6c1"}], "flat": true, "pillarGeo": {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"facility_id": "hanshin-umeda", "store": "阪神梅田本店", "count": 27, "height": 112.1, "color": "#2ecc71"}, "geometry": {"type": "Polygon", "coordinates": [[[135.49843, 34.703829999999996], [135.49857, 34.703829999999996], [135.49857, 34.70397], [135.49843, 34.70397], [135.49843, 34.703829999999996]]]}}, {"type": "Feature", "properties": {"facility_id": "grandfront-osaka", "store": "グランフロント大阪", "count": 12, "height": 95.5, "color": "#2ecc71"}, "geometry": {"type": "Polygon", "coordinates": [[[135.49443, 34.70573], [135.49456999999998, 34.70573], [135.49456999999998, 34.705870000000004], [135.49443, 34.705870000000004], [135.49443, 34.70573]]]}}, {"type": "Feature", "properties": {"facility_id": "hankyu-umeda", "store": "阪急うめだ本店", "count": 10, "height": 91.9, "color": "#2ecc71"}, "geometry": {"type": "Polygon", "coordinates": [[[135.49823, 34.70543], [135.49837, 34.70543], [135.49837, 34.70557], [135.49823, 34.70557], [135.49823, 34.70543]]]}}, {"type": "Feature", "properties": {"facility_id": "diamor-osaka", "store": "ディアモール大阪", "count": 6, "height": 82.1, "color": "#a8e6c1"}, "geometry": {"type": "Polygon", "coordinates": [[[135.49643, 34.70113], [135.49657, 34.70113], [135.49657, 34.70127], [135.49643, 34.70127], [135.49643, 34.70113]]]}}, {"type": "Feature", "properties": {"facility_id": "hepfive", "store": "HEP FIVE", "count": 2, "height": 63.8, "color": "#a8e6c1"}, "geometry": {"type": "Polygon", "coordinates": [[[135.50023000000002, 34.70393], [135.50037, 34.70393], [135.50037, 34.70407], [135.50023000000002, 34.70407], [135.50023000000002, 34.70393]]]}}, {"type": "Feature", "properties": {"facility_id": "yodobashi-umeda-via-samsung", "store": "ヨドバシカメラ マルチメディア梅田", "count": 1, "height": 55.0, "color": "#a8e6c1"}, "geometry": {"type": "Polygon", "coordinates": [[[135.49503, 34.70453], [135.49517, 34.70453], [135.49517, 34.70467], [135.49503, 34.70467], [135.49503, 34.70453]]]}}]}, "pillarPoints": {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"facility_id": "hanshin-umeda", "store": "阪神梅田本店", "count": 27, "color": "#2ecc71"}, "geometry": {"type": "Point", "coordinates": [135.4985, 34.7039]}}, {"type": "Feature", "properties": {"facility_id": "grandfront-osaka", "store": "グランフロント大阪", "count": 12, "color": "#2ecc71"}, "geometry": {"type": "Point", "coordinates": [135.4945, 34.7058]}}, {"type": "Feature", "properties": {"facility_id": "hankyu-umeda", "store": "阪急うめだ本店", "count": 10, "color": "#2ecc71"}, "geometry": {"type": "Point", "coordinates": [135.4983, 34.7055]}}, {"type": "Feature", "properties": {"facility_id": "diamor-osaka", "store": "ディアモール大阪", "count": 6, "color": "#a8e6c1"}, "geometry": {"type": "Point", "coordinates": [135.4965, 34.7012]}}, {"type": "Feature", "properties": {"facility_id": "hepfive", "store": "HEP FIVE", "count": 2, "color": "#a8e6c1"}, "geometry": {"type": "Point", "coordinates": [135.5003, 34.704]}}, {"type": "Feature", "properties": {"facility_id": "yodobashi-umeda-via-samsung", "store": "ヨドバシカメラ マルチメディア梅田", "count": 1, "color": "#a8e6c1"}, "geometry": {"type": "Point", "coordinates": [135.4951, 34.7046]}}]}, "surface": {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"to": "hankyu-umeda", "distance_m": 541, "duration_min": 7, "mode": "surface"}, "geometry": {"type": "LineString", "coordinates": [[135.496407, 34.702387], [135.496659, 34.702515], [135.496761, 34.702371], [135.496894, 34.702438], [135.497068, 34.702527], [135.497109, 34.702549], [135.49723, 34.702611], [135.497445, 34.702742], [135.497601, 34.702834], [135.497621, 34.702848], [135.497649, 34.702868], [135.497696, 34.702889], [135.497867, 34.702953], [135.497934, 34.702979], [135.497969, 34.702996], [135.497931, 34.703091], [135.4979, 34.703163], [135.49794, 34.703186], [135.498106, 34.703274], [135.49818, 34.703314], [135.498272, 34.703363], [135.498273, 34.703682], [135.498273, 34.703928], [135.498272, 34.703935], [135.49827, 34.703949], [135.498269, 34.703957], [135.498265, 34.703975], [135.498336, 34.703986], [135.498277, 34.704234], [135.498229, 34.704443], [135.498167, 34.704734], [135.498101, 34.704843], [135.498082, 34.704936], [135.498014, 34.704926], [135.497952, 34.704917], [135.497885, 34.705249], [135.497863, 34.705356], [135.498506, 34.705455]]}}, {"type": "Feature", "properties": {"to": "hanshin-umeda", "distance_m": 316, "duration_min": 4, "mode": "surface"}, "geometry": {"type": "LineString", "coordinates": [[135.496407, 34.702387], [135.496659, 34.702515], [135.496761, 34.702371], [135.496894, 34.702438], [135.497068, 34.702527], [135.497109, 34.702549], [135.49723, 34.702611], [135.497445, 34.702742], [135.497601, 34.702834], [135.497621, 34.702848], [135.497649, 34.702868], [135.497696, 34.702889], [135.497867, 34.702953], [135.497934, 34.702979], [135.497969, 34.702996], [135.497931, 34.703091], [135.4979, 34.703163], [135.49794, 34.703186], [135.498106, 34.703274], [135.49818, 34.703314], [135.498272, 34.703363], [135.498374, 34.703418], [135.498433, 34.703449], [135.498497, 34.703484], [135.498506, 34.703979]]}}, {"type": "Feature", "properties": {"to": "diamor-osaka", "distance_m": 173, "duration_min": 2, "mode": "surface"}, "geometry": {"type": "LineString", "coordinates": [[135.496407, 34.702387], [135.496039, 34.702199], [135.496143, 34.702064], [135.496416, 34.701638], [135.496497, 34.701524], [135.496525, 34.701486], [135.496558, 34.701442], [135.496568, 34.701425], [135.496431, 34.70136], [135.496513, 34.701247], [135.496541, 34.701208]]}}, {"type": "Feature", "properties": {"to": "hepfive", "distance_m": 418, "duration_min": 5, "mode": "surface"}, "geometry": {"type": "LineString", "coordinates": [[135.496407, 34.702387], [135.496659, 34.702515], [135.496761, 34.702371], [135.496894, 34.702438], [135.497068, 34.702527], [135.497109, 34.702549], [135.49723, 34.702611], [135.497445, 34.702742], [135.497601, 34.702834], [135.497621, 34.702848], [135.497649, 34.702868], [135.497696, 34.702889], [135.497867, 34.702953], [135.497934, 34.702979], [135.497969, 34.702996], [135.498013, 34.70302], [135.498676, 34.703364], [135.498619, 34.703477], [135.498791, 34.703568], [135.498999, 34.70368], [135.499069, 34.703718], [135.49918, 34.703776], [135.499211, 34.703793], [135.49936, 34.70387], [135.499366, 34.703873], [135.499397, 34.703889], [135.499447, 34.703913], [135.499499, 34.703938], [135.499545, 34.703961], [135.49959, 34.703983], [135.500028, 34.704184]]}}]}, "underground": {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"to": "grandfront-osaka", "distance_m": 679, "duration_min": 8, "mode": "mixed"}, "geometry": {"type": "LineString", "coordinates": [[135.496407, 34.702387], [135.496659, 34.702515], [135.496576, 34.702634], [135.496163, 34.70322], [135.496729, 34.703498], [135.496751, 34.703508], [135.496776, 34.70347], [135.496912, 34.703536], [135.49696, 34.703549], [135.496953, 34.703565], [135.496896, 34.703704], [135.496892, 34.703712], [135.496912, 34.703718], [135.496922, 34.703721], [135.496907, 34.703762], [135.496771, 34.703718], [135.496753, 34.703749], [135.49658, 34.703976], [135.496008, 34.703687], [135.495951, 34.703675], [135.495909, 34.703673], [135.495865, 34.703678], [135.495831, 34.703691], [135.4958, 34.703708], [135.495767, 34.703732], [135.495741, 34.703769], [135.495687, 34.703905], [135.495658, 34.703954], [135.495574, 34.704189], [135.495573, 34.704218], [135.495549, 34.704212], [135.49554, 34.70421], [135.495517, 34.704275], [135.495514, 34.704285], [135.495478, 34.704278], [135.495471, 34.704299], [135.495465, 34.704321], [135.495375, 34.70456], [135.495337, 34.704657], [135.495307, 34.704737], [135.495338, 34.704772], [135.495401, 34.704825], [135.495396, 34.704848], [135.495387, 34.704896], [135.495372, 34.704973], [135.495364, 34.705007], [135.495354, 34.705063], [135.495309, 34.705079], [135.495271, 34.705059], [135.495211, 34.705054], [135.495155, 34.705047], [135.495104, 34.705056], [135.495013, 34.704999], [135.494765, 34.704966], [135.494747, 34.70507], [135.494672, 34.705548], [135.494634, 34.705792]]}}, {"type": "Feature", "properties": {"to": "yodobashi-umeda-via-samsung", "distance_m": 512, "duration_min": 6, "mode": "mixed"}, "geometry": {"type": "LineString", "coordinates": [[135.496407, 34.702387], [135.496659, 34.702515], [135.496576, 34.702634], [135.496163, 34.70322], [135.496729, 34.703498], [135.496751, 34.703508], [135.496776, 34.70347], [135.496912, 34.703536], [135.49696, 34.703549], [135.496953, 34.703565], [135.496896, 34.703704], [135.496892, 34.703712], [135.496912, 34.703718], [135.496922, 34.703721], [135.496907, 34.703762], [135.496771, 34.703718], [135.496753, 34.703749], [135.49658, 34.703976], [135.496008, 34.703687], [135.495951, 34.703675], [135.495909, 34.703673], [135.495865, 34.703678], [135.495831, 34.703691], [135.4958, 34.703708], [135.495767, 34.703732], [135.495741, 34.703769], [135.495687, 34.703905], [135.495658, 34.703954], [135.495574, 34.704189], [135.495573, 34.704218], [135.495549, 34.704212], [135.49554, 34.70421], [135.495517, 34.704275], [135.495514, 34.704285], [135.495478, 34.704278], [135.495471, 34.704299], [135.495465, 34.704321], [135.495375, 34.70456], [135.495337, 34.704657], [135.495307, 34.704737], [135.495338, 34.704772], [135.495293, 34.70477], [135.495229, 34.704756], [135.495175, 34.704744], [135.49515, 34.704742]]}}]}, "routeByFacility": {"hankyu-umeda": {"distance_m": 541, "duration_min": 7, "mode": "surface", "geometry": [[135.496407, 34.702387], [135.496659, 34.702515], [135.496761, 34.702371], [135.496894, 34.702438], [135.497068, 34.702527], [135.497109, 34.702549], [135.49723, 34.702611], [135.497445, 34.702742], [135.497601, 34.702834], [135.497621, 34.702848], [135.497649, 34.702868], [135.497696, 34.702889], [135.497867, 34.702953], [135.497934, 34.702979], [135.497969, 34.702996], [135.497931, 34.703091], [135.4979, 34.703163], [135.49794, 34.703186], [135.498106, 34.703274], [135.49818, 34.703314], [135.498272, 34.703363], [135.498273, 34.703682], [135.498273, 34.703928], [135.498272, 34.703935], [135.49827, 34.703949], [135.498269, 34.703957], [135.498265, 34.703975], [135.498336, 34.703986], [135.498277, 34.704234], [135.498229, 34.704443], [135.498167, 34.704734], [135.498101, 34.704843], [135.498082, 34.704936], [135.498014, 34.704926], [135.497952, 34.704917], [135.497885, 34.705249], [135.497863, 34.705356], [135.498506, 34.705455]]}, "hanshin-umeda": {"distance_m": 316, "duration_min": 4, "mode": "surface", "geometry": [[135.496407, 34.702387], [135.496659, 34.702515], [135.496761, 34.702371], [135.496894, 34.702438], [135.497068, 34.702527], [135.497109, 34.702549], [135.49723, 34.702611], [135.497445, 34.702742], [135.497601, 34.702834], [135.497621, 34.702848], [135.497649, 34.702868], [135.497696, 34.702889], [135.497867, 34.702953], [135.497934, 34.702979], [135.497969, 34.702996], [135.497931, 34.703091], [135.4979, 34.703163], [135.49794, 34.703186], [135.498106, 34.703274], [135.49818, 34.703314], [135.498272, 34.703363], [135.498374, 34.703418], [135.498433, 34.703449], [135.498497, 34.703484], [135.498506, 34.703979]]}, "diamor-osaka": {"distance_m": 173, "duration_min": 2, "mode": "surface", "geometry": [[135.496407, 34.702387], [135.496039, 34.702199], [135.496143, 34.702064], [135.496416, 34.701638], [135.496497, 34.701524], [135.496525, 34.701486], [135.496558, 34.701442], [135.496568, 34.701425], [135.496431, 34.70136], [135.496513, 34.701247], [135.496541, 34.701208]]}, "hepfive": {"distance_m": 418, "duration_min": 5, "mode": "surface", "geometry": [[135.496407, 34.702387], [135.496659, 34.702515], [135.496761, 34.702371], [135.496894, 34.702438], [135.497068, 34.702527], [135.497109, 34.702549], [135.49723, 34.702611], [135.497445, 34.702742], [135.497601, 34.702834], [135.497621, 34.702848], [135.497649, 34.702868], [135.497696, 34.702889], [135.497867, 34.702953], [135.497934, 34.702979], [135.497969, 34.702996], [135.498013, 34.70302], [135.498676, 34.703364], [135.498619, 34.703477], [135.498791, 34.703568], [135.498999, 34.70368], [135.499069, 34.703718], [135.49918, 34.703776], [135.499211, 34.703793], [135.49936, 34.70387], [135.499366, 34.703873], [135.499397, 34.703889], [135.499447, 34.703913], [135.499499, 34.703938], [135.499545, 34.703961], [135.49959, 34.703983], [135.500028, 34.704184]]}, "grandfront-osaka": {"distance_m": 679, "duration_min": 8, "mode": "mixed", "geometry": [[135.496407, 34.702387], [135.496659, 34.702515], [135.496576, 34.702634], [135.496163, 34.70322], [135.496729, 34.703498], [135.496751, 34.703508], [135.496776, 34.70347], [135.496912, 34.703536], [135.49696, 34.703549], [135.496953, 34.703565], [135.496896, 34.703704], [135.496892, 34.703712], [135.496912, 34.703718], [135.496922, 34.703721], [135.496907, 34.703762], [135.496771, 34.703718], [135.496753, 34.703749], [135.49658, 34.703976], [135.496008, 34.703687], [135.495951, 34.703675], [135.495909, 34.703673], [135.495865, 34.703678], [135.495831, 34.703691], [135.4958, 34.703708], [135.495767, 34.703732], [135.495741, 34.703769], [135.495687, 34.703905], [135.495658, 34.703954], [135.495574, 34.704189], [135.495573, 34.704218], [135.495549, 34.704212], [135.49554, 34.70421], [135.495517, 34.704275], [135.495514, 34.704285], [135.495478, 34.704278], [135.495471, 34.704299], [135.495465, 34.704321], [135.495375, 34.70456], [135.495337, 34.704657], [135.495307, 34.704737], [135.495338, 34.704772], [135.495401, 34.704825], [135.495396, 34.704848], [135.495387, 34.704896], [135.495372, 34.704973], [135.495364, 34.705007], [135.495354, 34.705063], [135.495309, 34.705079], [135.495271, 34.705059], [135.495211, 34.705054], [135.495155, 34.705047], [135.495104, 34.705056], [135.495013, 34.704999], [135.494765, 34.704966], [135.494747, 34.70507], [135.494672, 34.705548], [135.494634, 34.705792]]}, "yodobashi-umeda-via-samsung": {"distance_m": 512, "duration_min": 6, "mode": "mixed", "geometry": [[135.496407, 34.702387], [135.496659, 34.702515], [135.496576, 34.702634], [135.496163, 34.70322], [135.496729, 34.703498], [135.496751, 34.703508], [135.496776, 34.70347], [135.496912, 34.703536], [135.49696, 34.703549], [135.496953, 34.703565], [135.496896, 34.703704], [135.496892, 34.703712], [135.496912, 34.703718], [135.496922, 34.703721], [135.496907, 34.703762], [135.496771, 34.703718], [135.496753, 34.703749], [135.49658, 34.703976], [135.496008, 34.703687], [135.495951, 34.703675], [135.495909, 34.703673], [135.495865, 34.703678], [135.495831, 34.703691], [135.4958, 34.703708], [135.495767, 34.703732], [135.495741, 34.703769], [135.495687, 34.703905], [135.495658, 34.703954], [135.495574, 34.704189], [135.495573, 34.704218], [135.495549, 34.704212], [135.49554, 34.70421], [135.495517, 34.704275], [135.495514, 34.704285], [135.495478, 34.704278], [135.495471, 34.704299], [135.495465, 34.704321], [135.495375, 34.70456], [135.495337, 34.704657], [135.495307, 34.704737], [135.495338, 34.704772], [135.495293, 34.70477], [135.495229, 34.704756], [135.495175, 34.704744], [135.49515, 34.704742]]}}, "origin": {"id": "osaka-station", "lat": 34.7024, "lng": 135.4964}, "styleUrl": "https://tiles.openfreemap.org/styles/liberty", "styleFallbacks": ["https://tile.openstreetmap.jp/styles/osm-bright-ja/style.json"], "hintFacility": "hanshin-umeda", "hintStore": "阪神梅田本店"};
+
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: DATA.styleUrl,
+      center: [DATA.origin.lng, DATA.origin.lat],
+      zoom: 15.5,
+      pitch: 0,   // 斜め見下ろし。ラスタタイルではこれができない
+      bearing: 0,
+      hash: false,
+      attributionControl: { compact: false }
+    });
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }));
+    // 外から状態を確かめられるようにしておく（レンダリング検証と #5 のUIから使う）
+    window.__map = map;
+
+    let styleIndex = -1;
+    map.on('error', (e) => {
+      // スタイルの取得に失敗したら代替へ。CDN 冗長化であってオフライン対応ではない
+      if (e && e.error && /style/i.test(String(e.error.message || '')) &&
+          styleIndex + 1 < DATA.styleFallbacks.length) {
+        styleIndex += 1;
+        map.setStyle(DATA.styleFallbacks[styleIndex]);
+      }
+    });
+
+    // setStyle は自前のソースとレイヤを全て捨てるので、スタイルが変わるたびに
+    // 入れ直す。'load' だけに繋ぐと、読み込み成功後にフォールバックへ切り替わった
+    // 場合に柱も経路も消え、しかも showRoute() が getLayer で握り潰すため
+    // 「ボタンを押すと距離は出るが線は出ない」という無言の失敗になる。
+    let originAdded = false;
+    function installLayers() {
+      if (!map.isStyleLoaded()) return;
+      if (map.getLayer('pillars')) return;   // 二重追加を避ける
+      addBuildings();
+      addRoutes();
+      addPillars();
+      if (!originAdded) { addOrigin(); originAdded = true; }
+    }
+    // styledata の時点では isStyleLoaded() がまだ false のことがあるので idle でも試す
+    map.on('load', installLayers);
+    map.on('styledata', installLayers);
+    map.on('idle', installLayers);
+
+    function addBuildings() {
+      if (DATA.flat) {
+        // 2D では建物の押し出しを畳む。真上から見た平面図にする
+        if (map.getLayer('building-3d')) {
+          map.setLayoutProperty('building-3d', 'visibility', 'none');
+        }
+        return;
+      }
+      // OpenFreeMap Liberty は building-3d を最初から持っているので、通常ここは
+      // 何もしない（実測: スタイル111レイヤに building-3d が含まれる）。
+      // 代替スタイルに切り替わったときのために追加処理を残してある。
+      if (!map.getSource('openmaptiles')) return;
+      if (map.getLayer('building-3d')) return;
+      map.addLayer({
+        id: 'building-3d',
+        source: 'openmaptiles',
+        'source-layer': 'building',
+        type: 'fill-extrusion',
+        minzoom: 14,
+        paint: {
+          'fill-extrusion-color': '#c8d0da',
+          'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 12],
+          'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+          'fill-extrusion-opacity': 0.75
+        }
+      });
+    }
+
+    function addRoutes() {
+      map.addSource('surface', { type: 'geojson', data: DATA.surface });
+      map.addSource('underground', { type: 'geojson', data: DATA.underground });
+
+      map.addLayer({
+        id: 'route-surface', type: 'line', source: 'surface',
+        layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+        paint: { 'line-color': '#4da3ff', 'line-width': 6, 'line-opacity': 0.9 }
+      });
+
+      // 地下経路は建物より「後」に追加する。建物の下に置くと fill-extrusion に
+      // 完全に遮蔽され、線が一切見えなくなる。破線のゴースト表示で地上と区別する。
+      map.addLayer({
+        id: 'route-underground', type: 'line', source: 'underground',
+        layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+        paint: {
+          'line-color': '#c792ea', 'line-width': 5, 'line-opacity': 0.85,
+          'line-dasharray': [2, 1.5]
+        }
+      });
+    }
+
+    function addPillars() {
+      if (DATA.flat) {
+        // 2D。件数の大小は大きさで表さず、円の中に数字を出す
+        map.addSource('pillars', { type: 'geojson', data: DATA.pillarPoints });
+        map.addLayer({
+          id: 'pillars', type: 'circle', source: 'pillars',
+          paint: {
+            'circle-radius': 18,
+            'circle-color': ['get', 'color'],
+            'circle-opacity': 0.95,
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#12503a'
+          }
+        });
+        // ラベルは**別ソース**に載せる。同じソースに乗せると、フォント解決に失敗した
+        // ときにタイル解析ごと落ち、円まで一緒に消える（実測: 6件中0件描画）。
+        // フォントもスタイルに実在するものを使う。存在しない名前を書くと同じ症状になる。
+        map.addSource('pillar-labels', { type: 'geojson', data: DATA.pillarPoints });
+        const styleFont = (map.getStyle().layers.find(
+          l => l.type === 'symbol' && l.layout && l.layout['text-font']
+        ) || {}).layout?.['text-font'] || ['Noto Sans Regular'];
+        map.addLayer({
+          id: 'pillar-count', type: 'symbol', source: 'pillar-labels',
+          layout: {
+            'text-field': ['to-string', ['get', 'count']],
+            'text-size': 15,
+            'text-font': styleFont,
+            'text-allow-overlap': true
+          },
+          paint: {
+            'text-color': '#0b3d24',
+            'text-halo-color': '#ffffff',
+            'text-halo-width': 1.2
+          }
+        });
+      } else {
+        map.addSource('pillars', { type: 'geojson', data: DATA.pillarGeo });
+        map.addLayer({
+          id: 'pillars', type: 'fill-extrusion', source: 'pillars',
+          paint: {
+            'fill-extrusion-color': ['get', 'color'],
+            'fill-extrusion-height': ['get', 'height'],
+            'fill-extrusion-base': 0,
+            'fill-extrusion-opacity': 0.85
+          }
+        });
+      }
+      map.on('mouseenter', 'pillars', () => map.getCanvas().style.cursor = 'pointer');
+      map.on('mouseleave', 'pillars', () => map.getCanvas().style.cursor = '');
+      map.on('click', 'pillars', (e) => {
+        const fid = e.features && e.features[0] && e.features[0].properties.facility_id;
+        if (fid) openCard(fid);
+      });
+    }
+
+    // --- カード（ピン → カード → 経路案内） ---
+    const card = document.getElementById('card');
+    const routeBtn = document.getElementById('route-btn');
+    let currentFacility = null;
+
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g,
+        c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+    }
+
+    window.openCard = function (facilityId) {
+      const p = DATA.pillars.find(x => x.facility_id === facilityId);
+      if (!p) return;
+      const hintEl = document.getElementById('hint');
+      if (hintEl) hintEl.classList.add('hidden');
+      currentFacility = facilityId;
+      document.getElementById('card-title').textContent = p.store;
+      document.getElementById('card-place').textContent =
+        `${p.place || ''}　無料イベント ${p.count} 件（確定 ${p.confirmed}）`;
+
+      document.getElementById('card-list').innerHTML = p.events.map(ev => {
+        const conf = ev.confidence === 'confirmed'
+          ? '<span class="badge b-confirmed">無料 確定</span>'
+          : '<span class="badge b-inferred">無料 推定</span>';
+        // POP-UP は入場無料でも物販ブースなので「もらえる」とは区別する
+        const pop = ev.popup_shop ? '<span class="badge b-popup">物販</span>' : '';
+        // URL は収集先サイトの <a href> をそのまま持っているので、スキームを検査する。
+        // esc() は属性の脱出は防ぐが javascript: や data: はそのまま通してしまう。
+        const safeUrl = /^https?:\/\//i.test(ev.url || '') ? ev.url : '';
+        const link = safeUrl
+          ? ` <a href="${esc(safeUrl)}" target="_blank" rel="noopener">詳細</a>` : '';
+        const evid = ev.evidence ? `<div class="d">根拠: ${esc(ev.evidence)}</div>` : '';
+        return `<li>${conf}${pop}<span class="t">${esc(ev.title)}</span>` +
+               `<div class="d">${esc(ev.date)}${link}</div>` +
+               (ev.detail ? `<div class="d">${esc(ev.detail)}</div>` : '') + evid + `</li>`;
+        // 公開ページでは detail / evidence が空になる（本文は転載しない）
+      }).join('');
+
+      const route = DATA.routeByFacility[facilityId];
+      routeBtn.disabled = !route;
+      routeBtn.textContent = route ? '経路案内' : '経路データなし';
+      document.getElementById('route-info').textContent = '';
+      card.classList.add('open');
+      window.showRoute(null);   // 別の施設の線を残さない
+    };
+
+    // 初回の誘導。柱がタップできることに気づかれないと、この地図は何もしない絵になる
+    const hint = document.getElementById('hint');
+    if (DATA.hintFacility) {
+      hint.textContent = `👆 ${DATA.hintStore} の${DATA.flat ? '円' : '柱'}をタップ（件数が最多）`;
+      hint.classList.remove('hidden');
+      hint.addEventListener('click', () => {
+        hint.classList.add('hidden');
+        openCard(DATA.hintFacility);
+      });
+    }
+
+    document.getElementById('card-close').addEventListener('click', () => {
+      card.classList.remove('open');
+      currentFacility = null;
+      window.showRoute(null);
+    });
+
+    routeBtn.addEventListener('click', () => {
+      if (!currentFacility) return;
+      const route = DATA.routeByFacility[currentFacility];
+      if (!route) return;
+      window.showRoute(currentFacility);
+      document.getElementById('route-info').textContent =
+        `徒歩 ${route.distance_m}m・約${route.duration_min}分` +
+        (route.mode === 'surface' ? '（地上）'
+          : route.mode === 'underground' ? '（地下）' : '（地上＋地下）');
+      const b = route.geometry.reduce(
+        (a, c) => [[Math.min(a[0][0], c[0]), Math.min(a[0][1], c[1])],
+                   [Math.max(a[1][0], c[0]), Math.max(a[1][1], c[1])]],
+        [[180, 90], [-180, -90]]);
+      map.fitBounds(b, {
+        padding: { top: 90, bottom: 260, left: 60, right: 60 },
+        pitch: DATA.flat ? 0 : 55
+      });
+    });
+
+    function addOrigin() {
+      new maplibregl.Marker({ color: '#ff8c42' })
+        .setLngLat([DATA.origin.lng, DATA.origin.lat])
+        .setPopup(new maplibregl.Popup().setText('現在地: ' + (DATA.origin.id || '')))
+        .addTo(map);
+    }
+
+    // 経路の表示切り替え。#5 のカードUIから呼ぶ入口をここで用意しておく
+    window.showRoute = function (facilityId) {
+      const filter = facilityId ? ['==', ['get', 'to'], facilityId] : null;
+      for (const id of ['route-surface', 'route-underground']) {
+        if (!map.getLayer(id)) continue;
+        map.setLayoutProperty(id, 'visibility', facilityId ? 'visible' : 'none');
+        if (filter) map.setFilter(id, filter);
+      }
+    };
+  </script>
+</body>
+</html>
